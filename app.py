@@ -8,17 +8,19 @@ import shlex
 from datetime import datetime
 from werkzeug.utils import secure_filename
 
+import torch
 from vosk import Model, KaldiRecognizer
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-from IndicTransToolkit import IndicProcessor
 from gtts import gTTS
-import torch
 
 # --------------------------------------------------
 # Flask App
 # --------------------------------------------------
 app = Flask(__name__)
 
+# --------------------------------------------------
+# Paths
+# --------------------------------------------------
 UPLOAD_FOLDER = "uploads"
 GENERATED_AUDIO_FOLDER = "generated_audio"
 VOSK_MODEL_PATH = "models/vosk/vosk-model-small-en-us-0.15"
@@ -39,21 +41,18 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 vosk_model = Model(VOSK_MODEL_PATH)
 
 # --------------------------------------------------
-# IndicTrans2 setup
+# mBART-50 Language Map (FINAL)
 # --------------------------------------------------
-translation_models = {}
-
-INDIC_LANG_MAP = {
-    "en": "eng_Latn",
-    "hi": "hin_Deva",
-    "bn": "ben_Beng",
-    "mr": "mar_Deva",
-    "od": "ory_Orya",
-    "ta": "tam_Taml",
-    "te": "tel_Telu",
-    "kn": "kan_Knda",
-    "ml": "mal_Mlym",
-    "gu": "guj_Gujr",
+MBART_LANG_MAP = {
+    "en": "en_XX",
+    "hi": "hi_IN",
+    "bn": "bn_IN",
+    "mr": "mr_IN",
+    "gu": "gu_IN",
+    "ta": "ta_IN",
+    "te": "te_IN",
+    "kn": "kn_IN",
+    "ml": "ml_IN",
 }
 
 GTTS_LANG_MAP = {
@@ -61,12 +60,11 @@ GTTS_LANG_MAP = {
     "hi": "hi",
     "bn": "bn",
     "mr": "mr",
-    "od": "or",
+    "gu": "gu",
     "ta": "ta",
     "te": "te",
     "kn": "kn",
     "ml": "ml",
-    "gu": "gu",
 }
 
 # --------------------------------------------------
@@ -114,48 +112,50 @@ def transcribe_audio(wav_path):
     return text.strip()
 
 # --------------------------------------------------
-# IndicTrans2 Translation
+# mBART-50 (ONLY translation model)
 # --------------------------------------------------
-def get_translation_model(src, tgt):
-    key = f"{src}-{tgt}"
-    if key in translation_models:
-        return translation_models[key]
+mbart_model = None
+mbart_tokenizer = None
 
-    if src == "en":
-        model_name = "ai4bharat/indictrans2-en-indic-dist-200M"
-    elif tgt == "en":
-        model_name = "ai4bharat/indictrans2-indic-en-dist-320M"
-    else:
-        model_name = "ai4bharat/indictrans2-indic-indic-dist-320M"
+def load_mbart_model():
+    global mbart_model, mbart_tokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForSeq2SeqLM.from_pretrained(
+    model_name = "facebook/mbart-large-50-many-to-many-mmt"
+
+    mbart_tokenizer = AutoTokenizer.from_pretrained(model_name)
+    mbart_model = AutoModelForSeq2SeqLM.from_pretrained(
         model_name,
-        trust_remote_code=True,
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
     ).to(device).eval()
 
-    processor = IndicProcessor(inference=True)
-    translation_models[key] = (model, tokenizer, processor)
-    return model, tokenizer, processor
-
 
 def translate_text(text, src, tgt):
-    model, tokenizer, processor = get_translation_model(src, tgt)
+    if src not in MBART_LANG_MAP or tgt not in MBART_LANG_MAP:
+        raise ValueError("Language not supported by mBART-50")
 
-    batch = processor.preprocess_batch(
-        [text],
-        src_lang=INDIC_LANG_MAP[src],
-        tgt_lang=INDIC_LANG_MAP[tgt],
-    )
+    src_lang = MBART_LANG_MAP[src]
+    tgt_lang = MBART_LANG_MAP[tgt]
 
-    inputs = tokenizer(batch, return_tensors="pt", padding=True).to(device)
+    mbart_tokenizer.src_lang = src_lang
+
+    inputs = mbart_tokenizer(
+        text,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+    ).to(device)
+
+    forced_bos_token_id = mbart_tokenizer.lang_code_to_id[tgt_lang]
 
     with torch.no_grad():
-        outputs = model.generate(**inputs, max_length=256, num_beams=5)
+        outputs = mbart_model.generate(
+            **inputs,
+            forced_bos_token_id=forced_bos_token_id,
+            max_length=256,
+            num_beams=5,
+        )
 
-    decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-    return processor.postprocess_batch(decoded, lang=INDIC_LANG_MAP[tgt])[0]
+    return mbart_tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
 
 # --------------------------------------------------
 # Routes
@@ -171,7 +171,7 @@ def translate_api():
         src = request.form.get("input_lang")
         tgt = request.form.get("target_lang")
 
-        if src not in INDIC_LANG_MAP or tgt not in INDIC_LANG_MAP:
+        if src not in MBART_LANG_MAP or tgt not in MBART_LANG_MAP:
             return jsonify({"error": "Unsupported language"}), 400
 
         file = request.files["file"]
@@ -182,13 +182,13 @@ def translate_api():
         upload_path = os.path.join(UPLOAD_FOLDER, name)
         file.save(upload_path)
 
-        # -------- Auto conversion for VOSK --------
+        # Convert for VOSK
         wav_path = convert_to_wav_16k(upload_path)
 
         # ASR
         recognized_text = transcribe_audio(wav_path)
 
-        # Translation
+        # Translation (mBART-50 ONLY)
         translated_text = translate_text(recognized_text, src, tgt)
 
         # TTS
@@ -218,4 +218,5 @@ def serve_audio(name):
 # Main
 # --------------------------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8002, debug=False)
+    load_mbart_model()
+    app.run(host="0.0.0.0", port=8000, debug=False)
