@@ -49,6 +49,11 @@ INDIC_LANG_MAP = {
     "bn": "ben_Beng",
     "mr": "mar_Deva",
     "od": "ory_Orya",
+    "ta": "tam_Taml",
+    "te": "tel_Telu",
+    "kn": "kan_Knda",
+    "ml": "mal_Mlym",
+    "gu": "guj_Gujr",
 }
 
 GTTS_LANG_MAP = {
@@ -56,6 +61,12 @@ GTTS_LANG_MAP = {
     "hi": "hi",
     "bn": "bn",
     "mr": "mr",
+    "od": "or",
+    "ta": "ta",
+    "te": "te",
+    "kn": "kn",
+    "ml": "ml",
+    "gu": "gu",
 }
 
 # --------------------------------------------------
