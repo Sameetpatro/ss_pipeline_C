@@ -1,0 +1,16 @@
+flask==3.0.0
+werkzeug==3.0.1
+
+vosk==0.3.45
+soundfile==0.13.1
+
+torch==2.1.2
+transformers==4.40.2
+sentencepiece==0.1.99
+
+IndicTransToolkit==1.1.1
+indic-nlp-library==0.92
+
+gTTS==2.5.1
+numpy==1.26.4
+tqdm==4.67.1
